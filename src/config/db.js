@@ -42,7 +42,6 @@ const connectDB = async () => {
     });
 
     registerMongoConnectionEvents();
-    registerGracefulShutdown();
   } catch (error) {
     logError('MongoDB connection failed', {
       message: error.message,
@@ -78,33 +77,19 @@ const registerMongoConnectionEvents = () => {
 };
 
 /**
- * Close MongoDB connection gracefully when the Node process stops.
+ * Close MongoDB connection gracefully.
  */
-const registerGracefulShutdown = () => {
-  const shutdown = async (signal) => {
-    try {
-      info(`Received ${signal}. Closing MongoDB connection...`);
+const closeDB = async () => {
+  if (mongoose.connection.readyState === 0) {
+    return;
+  }
 
-      await mongoose.connection.close();
-
-      info('MongoDB connection closed gracefully');
-      process.exit(0);
-    } catch (error) {
-      logError('Error during MongoDB graceful shutdown', {
-        signal,
-        message: error.message,
-        stack: error.stack,
-      });
-
-      process.exit(1);
-    }
-  };
-
-  process.once('SIGINT', () => shutdown('SIGINT'));
-  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  await mongoose.connection.close();
+  info('MongoDB connection closed gracefully');
 };
 
 module.exports = {
   connectDB,
+  closeDB,
   mongoose,
 };

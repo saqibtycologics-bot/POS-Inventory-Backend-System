@@ -47,6 +47,8 @@ const getStockValueReport = asyncHandler(async (req, res) => {
  *
  * Supports:
  * - storeId
+ * - page
+ * - limit
  */
 const getLowStockReport = asyncHandler(async (req, res) => {
   const result = await reportService.getLowStockReport(req.query, req.user);

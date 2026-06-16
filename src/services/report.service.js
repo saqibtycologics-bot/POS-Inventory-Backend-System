@@ -203,7 +203,10 @@ const getStockValueReport = async ({ storeId }, userContext) => {
  * - company-wide report
  * - optional store filter
  */
-const getLowStockReport = async ({ storeId }, userContext) => {
+const getLowStockReport = async (
+  { storeId, page, limit },
+  userContext
+) => {
   const { companyId } = userContext;
 
   await ensureValidStore(storeId, companyId);
@@ -220,20 +223,38 @@ const getLowStockReport = async ({ storeId }, userContext) => {
     query.storeId = storeId;
   }
 
-  const lowStockVariants = await Variant.find(query)
-    .populate('productId', 'name')
-    .populate('storeId', 'name')
-    .sort({
-      stock: 1,
-      createdAt: -1,
-    });
+  const skip = (page - 1) * limit;
+
+  const [lowStockVariants, totalLowStockVariants] = await Promise.all([
+    Variant.find(query)
+      .populate('productId', 'name')
+      .populate('storeId', 'name')
+      .sort({
+        stock: 1,
+        createdAt: -1,
+      })
+      .skip(skip)
+      .limit(limit),
+
+    Variant.countDocuments(query),
+  ]);
+
+  const totalPages = Math.ceil(totalLowStockVariants / limit);
 
   return {
     filters: {
       storeId: storeId || null,
     },
-    totalLowStockVariants: lowStockVariants.length,
+    totalLowStockVariants,
     variants: lowStockVariants,
+    pagination: {
+      total: totalLowStockVariants,
+      page,
+      limit,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1,
+    },
   };
 };
 

@@ -1,3 +1,5 @@
+const { mongoose } = require('../config/db');
+
 const Product = require('../models/product.model');
 const Variant = require('../models/variant.model');
 const Store = require('../models/store.model');
@@ -111,17 +113,6 @@ const createProduct = async (payload, userContext) => {
     });
   }
 
-  const product = await Product.create({
-    name,
-    description,
-    basePrice,
-    categoryId,
-    storeId,
-    companyId,
-    createdBy: userId,
-    hasVariants: variants.length > 1,
-  });
-
   const variantPayloads = variants.map((variant) => ({
     name: variant.name,
     sku: variant.sku.trim().toUpperCase(),
@@ -130,19 +121,52 @@ const createProduct = async (payload, userContext) => {
     stock: variant.stock ?? 0,
     lowStockThreshold: variant.lowStockThreshold ?? 5,
     attributes: variant.attributes || {},
-    productId: product._id,
     storeId,
     companyId,
     createdBy: userId,
     isDefault: variants.length === 1,
   }));
 
-  const createdVariants = await Variant.insertMany(variantPayloads);
+  const session = await mongoose.startSession();
+  let result;
 
-  return {
-    product,
-    variants: createdVariants,
-  };
+  try {
+    await session.withTransaction(async () => {
+      const [product] = await Product.create(
+        [
+          {
+            name,
+            description,
+            basePrice,
+            categoryId,
+            storeId,
+            companyId,
+            createdBy: userId,
+            hasVariants: variants.length > 1,
+          },
+        ],
+        { session }
+      );
+
+      const variantsWithProductId = variantPayloads.map((variant) => ({
+        ...variant,
+        productId: product._id,
+      }));
+
+      const createdVariants = await Variant.insertMany(variantsWithProductId, {
+        session,
+      });
+
+      result = {
+        product,
+        variants: createdVariants,
+      };
+    });
+
+    return result;
+  } finally {
+    await session.endSession();
+  }
 };
 
 /**

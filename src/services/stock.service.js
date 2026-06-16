@@ -1,3 +1,5 @@
+const { mongoose } = require('../config/db');
+
 const Variant = require('../models/variant.model');
 const StockMovement = require('../models/stockMovement.model');
 
@@ -23,92 +25,148 @@ const getOwnedActiveVariant = async (variantId, companyId) => {
 /**
  * Add stock to a variant.
  *
- * Flow:
- * 1. Validate variant ownership
- * 2. Capture previous stock
- * 3. Increase stock
- * 4. Save variant
- * 5. Create StockMovement record of type "in"
+ * Uses atomic $inc and a transaction so stock updates
+ * and movement records stay consistent under concurrency.
  */
-const addStock = async (
-  { variantId, quantity, note },
-  userContext
-) => {
+const addStock = async ({ variantId, quantity, note }, userContext) => {
   const { userId, companyId } = userContext;
 
-  const variant = await getOwnedActiveVariant(variantId, companyId);
+  const session = await mongoose.startSession();
+  let result;
 
-  const previousStock = variant.stock;
-  const newStock = previousStock + quantity;
+  try {
+    await session.withTransaction(async () => {
+      const updatedVariant = await Variant.findOneAndUpdate(
+        {
+          _id: variantId,
+          companyId,
+          isActive: true,
+        },
+        {
+          $inc: {
+            stock: quantity,
+          },
+        },
+        {
+          new: true,
+          session,
+        }
+      );
 
-  variant.stock = newStock;
-  await variant.save();
+      if (!updatedVariant) {
+        throw getErrorResponse('VARIANT_NOT_FOUND');
+      }
 
-  const stockMovement = await StockMovement.create({
-    variantId: variant._id,
-    productId: variant.productId,
-    storeId: variant.storeId,
-    companyId,
-    type: 'in',
-    quantity,
-    previousStock,
-    newStock,
-    note,
-    createdBy: userId,
-  });
+      const previousStock = updatedVariant.stock - quantity;
+      const newStock = updatedVariant.stock;
 
-  return {
-    variant,
-    stockMovement,
-  };
+      const [stockMovement] = await StockMovement.create(
+        [
+          {
+            variantId: updatedVariant._id,
+            productId: updatedVariant.productId,
+            storeId: updatedVariant.storeId,
+            companyId,
+            type: 'in',
+            quantity,
+            previousStock,
+            newStock,
+            note,
+            createdBy: userId,
+          },
+        ],
+        { session }
+      );
+
+      result = {
+        variant: updatedVariant,
+        stockMovement,
+      };
+    });
+
+    return result;
+  } finally {
+    await session.endSession();
+  }
 };
 
 /**
  * Remove stock manually from a variant.
  *
- * Flow:
- * 1. Validate variant ownership
- * 2. Check enough stock is available
- * 3. Capture previous stock
- * 4. Decrease stock
- * 5. Save variant
- * 6. Create StockMovement record of type "out"
+ * Uses conditional atomic $inc so concurrent removals
+ * cannot drive stock below zero.
  */
-const removeStock = async (
-  { variantId, quantity, note },
-  userContext
-) => {
+const removeStock = async ({ variantId, quantity, note }, userContext) => {
   const { userId, companyId } = userContext;
 
-  const variant = await getOwnedActiveVariant(variantId, companyId);
+  const session = await mongoose.startSession();
+  let result;
 
-  if (variant.stock < quantity) {
-    throw getErrorResponse('INSUFFICIENT_STOCK');
+  try {
+    await session.withTransaction(async () => {
+      const updatedVariant = await Variant.findOneAndUpdate(
+        {
+          _id: variantId,
+          companyId,
+          isActive: true,
+          stock: { $gte: quantity },
+        },
+        {
+          $inc: {
+            stock: -quantity,
+          },
+        },
+        {
+          new: true,
+          session,
+        }
+      );
+
+      if (!updatedVariant) {
+        const variantExists = await Variant.findOne({
+          _id: variantId,
+          companyId,
+          isActive: true,
+        }).session(session);
+
+        if (!variantExists) {
+          throw getErrorResponse('VARIANT_NOT_FOUND');
+        }
+
+        throw getErrorResponse('INSUFFICIENT_STOCK');
+      }
+
+      const previousStock = updatedVariant.stock + quantity;
+      const newStock = updatedVariant.stock;
+
+      const [stockMovement] = await StockMovement.create(
+        [
+          {
+            variantId: updatedVariant._id,
+            productId: updatedVariant.productId,
+            storeId: updatedVariant.storeId,
+            companyId,
+            type: 'out',
+            quantity,
+            previousStock,
+            newStock,
+            note,
+            createdBy: userId,
+          },
+        ],
+        { session }
+      );
+
+      result = {
+        variant: updatedVariant,
+        stockMovement,
+      };
+    });
+
+    return result;
+  } finally {
+    await session.endSession();
   }
-
-  const previousStock = variant.stock;
-  const newStock = previousStock - quantity;
-
-  variant.stock = newStock;
-  await variant.save();
-
-  const stockMovement = await StockMovement.create({
-    variantId: variant._id,
-    productId: variant.productId,
-    storeId: variant.storeId,
-    companyId,
-    type: 'out',
-    quantity,
-    previousStock,
-    newStock,
-    note,
-    createdBy: userId,
-  });
-
-  return {
-    variant,
-    stockMovement,
-  };
 };
 
 /**

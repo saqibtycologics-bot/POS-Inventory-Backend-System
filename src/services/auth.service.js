@@ -3,6 +3,8 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const dayjs = require('dayjs');
 
+const { mongoose } = require('../config/db');
+
 const User = require('../models/user.model');
 const Company = require('../models/company.model');
 const jwtConfig = require('../config/jwtConfig');
@@ -129,40 +131,61 @@ const register = async ({ name, email, password, companyName }) => {
 
   const passwordHash = await hashPassword(password);
 
-  const user = await User.create({
-    name,
-    email,
-    passwordHash,
-  });
+  const session = await mongoose.startSession();
+  let result;
 
-  const company = await Company.create({
-    name: companyName,
-    ownerId: user._id,
-  });
+  try {
+    await session.withTransaction(async () => {
+      const [user] = await User.create(
+        [
+          {
+            name,
+            email,
+            passwordHash,
+          },
+        ],
+        { session }
+      );
 
-  user.companyId = company._id;
+      const [company] = await Company.create(
+        [
+          {
+            name: companyName,
+            ownerId: user._id,
+          },
+        ],
+        { session }
+      );
 
-  const accessToken = generateAccessToken(user);
-  const refreshToken = generateRefreshToken(user);
+      user.companyId = company._id;
 
-  user.refreshTokenHash = hashRefreshToken(refreshToken);
-  user.refreshTokenExpiresAt = getRefreshTokenExpiryDate();
+      const accessToken = generateAccessToken(user);
+      const refreshToken = generateRefreshToken(user);
 
-  await user.save();
+      user.refreshTokenHash = hashRefreshToken(refreshToken);
+      user.refreshTokenExpiresAt = getRefreshTokenExpiryDate();
 
-  return {
-    user: sanitizeUser(user),
-    company: {
-      id: company._id,
-      name: company.name,
-      ownerId: company.ownerId,
-      isActive: company.isActive,
-      createdAt: company.createdAt,
-      updatedAt: company.updatedAt,
-    },
-    accessToken,
-    refreshToken,
-  };
+      await user.save({ session });
+
+      result = {
+        user: sanitizeUser(user),
+        company: {
+          id: company._id,
+          name: company.name,
+          ownerId: company.ownerId,
+          isActive: company.isActive,
+          createdAt: company.createdAt,
+          updatedAt: company.updatedAt,
+        },
+        accessToken,
+        refreshToken,
+      };
+    });
+
+    return result;
+  } finally {
+    await session.endSession();
+  }
 };
 
 /**

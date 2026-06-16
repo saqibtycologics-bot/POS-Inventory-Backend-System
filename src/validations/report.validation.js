@@ -1,6 +1,7 @@
 const { z } = require('zod');
 const {
   mongoIdSchema,
+  paginationQuerySchema,
 } = require('./common.validation');
 
 /**
@@ -62,9 +63,11 @@ const stockValueReportQuerySchema = z
  *
  * Optional:
  * - storeId
+ * - page
+ * - limit
  */
-const lowStockReportQuerySchema = z
-  .object({
+const lowStockReportQuerySchema = paginationQuerySchema
+  .extend({
     storeId: mongoIdSchema.optional(),
   })
   .strict();
